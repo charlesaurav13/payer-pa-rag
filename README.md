@@ -184,27 +184,6 @@ Chosen over BGE-large / E5-large because the policy-extraction queries are short
                        └────────────────────────────┘
 ```
 
-### Same diagram, in Mermaid
-
-```mermaid
-flowchart TD
-    PDF[Payer PA Policy PDF] --> Extract[PyMuPDF extract<br/>layout-aware reading order]
-    Extract --> Clean[Clean text + chunk<br/>700 chars / 150 overlap]
-    Clean --> Brands[Brand detection<br/>PsO primary, PsA fallback<br/>TREMFYA · STELARA]
-    Brands --> BM25[BM25 lexical retrieval]
-    Brands --> Chroma[BGE embeddings<br/>ChromaDB semantic retrieval]
-    Brands --> SrcConf[Source-confidence layer<br/>freshness · trust · consistency]
-    BM25 --> RRF[Reciprocal Rank Fusion<br/>k = 60]
-    Chroma --> RRF
-    RRF --> TopK[Top-K chunks · dedup ≤ 24]
-    TopK --> LLM[Llama 3.1 8B Instruct<br/>JSON mode · temp 0<br/>all 12 fields per call]
-    SrcConf --> Gate[Confidence + evidence-grounding gates]
-    LLM --> Gate
-    Gate --> Rules[Business-rule pass<br/>reauth consistency · qty vs dosage]
-    Rules --> Score[Access Score 0–100<br/>zero credit for fallback fields]
-    Score --> CSV[(submission.csv<br/>15 columns<br/>per-PDF incremental write)]
-```
-
 ---
 
 ## 4. What each component does
