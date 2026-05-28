@@ -6,9 +6,9 @@ End-to-end extraction of 12 business parameters + an Access Score (0–100) from
 
 ## 1. How to run
 
-We have two files :
+We have two files:
 
-- `zsads-rag.py` — the full pipeline
+- `zsads-rag.ipynb` — the full pipeline notebook
 - `requirements.txt` — pinned dependencies
 
 ### Step 1 — Install dependencies
@@ -21,7 +21,7 @@ This installs PyMuPDF (PDF extraction), ChromaDB (vector store), sentence-transf
 
 ### Step 2 — Set your OpenRouter API key
 
-The script was originally written for Kaggle and reads the key from Kaggle secrets. **If you're running this anywhere other than Kaggle, you must hardcode the key.** Open `zsads-rag.py`, find the block:
+The notebook was originally written for Kaggle and reads the key from Kaggle secrets. **If you're running this anywhere other than Kaggle, you must set the key via environment variable or hardcode it.** In the `Configuration` cell, find:
 
 ```python
 if IS_KAGGLE:
@@ -44,9 +44,9 @@ else:
 
 Get an API key at <https://openrouter.ai/keys>. The free tier is fine — Llama 3.1 8B Instruct costs about $0.02 per million tokens.
 
-### Step 3 — Point the script at your PDFs
+### Step 3 — Point the notebook at your PDFs
 
-In the same `Configuration` section, set `PDF_DIR` to the folder that holds the policy PDFs:
+In the same `Configuration` cell, set `PDF_DIR` to the folder that holds the policy PDFs:
 
 ```python
 PDF_DIR = Path("/absolute/path/to/Sample_PsO_ADS_Track")
@@ -54,13 +54,9 @@ PDF_DIR = Path("/absolute/path/to/Sample_PsO_ADS_Track")
 
 ### Step 4 — Run
 
-```bash
-python zsads-rag.py
-```
+Open `zsads-rag.ipynb` in Jupyter and run all cells. It will produce `submission.csv` with the 15 columns, one row per `(Filename, Brand)`.
 
-It will produce `submission.csv` with the 15 columns, one row per `(Filename, Brand)`.
-
-The script writes incrementally — if it crashes midway, just re-run and it will resume from the next unprocessed PDF.
+The notebook writes incrementally — if it crashes midway, just re-run and it will resume from the next unprocessed PDF.
 
 ---
 
@@ -77,22 +73,22 @@ The script writes incrementally — if it crashes midway, just re-run and it wil
 
 The model is called with `temperature=0` and `response_format={"type":"json_object"}`. A system prompt forbids it from using external knowledge — every field must come back with a verbatim quote from the retrieved context.
 
-### 2.2 Embedding model — BAAI/bge-small-en-v1.5
+### 2.2 Embedding model — BAAI/bge-large-en-v1.5
 
-The dense-retrieval half of the hybrid retriever runs locally with **BAAI/bge-small-en-v1.5**:
+The dense-retrieval half of the hybrid retriever runs locally with **BAAI/bge-large-en-v1.5**:
 
 | Property | Value |
 |---|---|
-| Parameters         | 33 M |
-| Embedding dim      | 384 |
+| Parameters         | 560 M |
+| Embedding dim      | 1024 |
 | Tokenizer          | BERT WordPiece, 512 max tokens |
-| MTEB retrieval avg | 51.7 (competitive with larger models) |
-| Runtime            | CPU-friendly, ~5–10 ms / chunk on a laptop |
+| MTEB retrieval avg | 54.2 |
+| Runtime            | CPU-friendly on small batches |
 | License            | MIT |
 
 Loaded once via `HuggingFaceEmbeddings`, normalized to unit length so cosine similarity reduces to a dot product. Vectors are written into **ChromaDB** (`PersistentClient`, sqlite-backed) so they sit on disk instead of in RAM — important for the Kaggle free tier.
 
-Chosen over BGE-large / E5-large because the policy-extraction queries are short and lexically anchored (drug names, dosages, indication codes); the larger embedder's gains don't justify the 8× memory and 5× latency cost on commodity hardware.
+Chosen over BGE-small because the larger model's richer representations improve recall on dense medical policy text, particularly for paraphrased step-therapy and TB screening language.
 
 ---
 
@@ -138,14 +134,14 @@ Chosen over BGE-large / E5-large because the policy-extraction queries are short
                 ┌───────────────┐                                │
                 │  Reciprocal   │                                │
                 │  Rank Fusion  │                                │
-                │   (RRF, k=60) │                                │
+                │   (RRF, k=20) │                                │
                 └───────┬───────┘                                │
                         │                                        │
                         ▼                                        │
                 ┌──────────────┐                                 │
                 │  Top-K       │                                 │
                 │  chunks      │                                 │
-                │ (dedup ≤24)  │                                 │
+                │ (dedup ≤36)  │                                 │
                 └──────┬───────┘                                 │
                        │                                         │
                        ▼                                         ▼
@@ -159,7 +155,7 @@ Chosen over BGE-large / E5-large because the policy-extraction queries are short
                                        │
                                        ▼
                        ┌────────────────────────────┐
-                       │   Confidence gate          │  drop if conf < 0.55
+                       │   Confidence gate          │  drop if conf < 0.45
                        │   Evidence-grounding gate  │  drop if quote ≠
                        │                            │  any retrieved chunk
                        └─────────────┬──────────────┘
@@ -191,11 +187,11 @@ Chosen over BGE-large / E5-large because the policy-extraction queries are short
 | Stage | What it produces | Why |
 |---|---|---|
 | **PyMuPDF extraction**       | Per-page text in human reading order | PA policies are full of multi-column key-value tables; `pypdf` scrambles them, PyMuPDF block-sort fixes it |
-| **Cleaning + chunking**      | 700-char chunks with page + position metadata | Position metadata feeds the trust signal later |
+| **Cleaning + chunking**      | 900-char chunks with page + position metadata | Position metadata feeds the trust signal later |
 | **Brand detection**          | List of target brands found in the doc | PsO-first then PsA fallback; scoped to TREMFYA + STELARA |
 | **BM25 retriever**           | Top-12 lexical matches per query | Catches exact drug names and numerals embeddings miss |
 | **ChromaDB retriever**       | Top-12 semantic matches per query | Catches paraphrases like "step therapy" ↔ "must first trial and fail" |
-| **RRF fusion**               | Single ranked list (top-14) | Parameter-free, robust to score-scale mismatch |
+| **RRF fusion**               | Single ranked list (top-20) | k=20 gives top-ranked results 3× more weight than k=60 |
 | **Source-confidence layer**  | Three diagnostic signals per retrieval | freshness (policy age), trust (body vs template), consistency (BM25 ∩ Chroma) |
 | **LLM extraction**           | JSON with 12 fields × {value, conf, evidence} | One call per brand → low overhead, shared attention across fields |
 | **Confidence gate**          | Replaces low-confidence values with fallback token | Better silence than wrong |
@@ -227,13 +223,11 @@ The score is the sum of seven weighted features, capped at 100:
 
 ### 5.2 Zero credit for fallback values
 
-The critical rule: a field that came back as `"Insufficient evidence found"` or any other placeholder contributes **0 points** to its feature — not the default credit. This stops the old bug where an empty row scored 85.
+The critical rule: a field that came back as `"Insufficient evidence found"` contributes **0 points** to its feature — not the default credit. This stops the bug where an empty row scored 85.
 
 Example: if `TB_Test_Required = "Insufficient evidence found"`, the TB feature contributes 0 (not 2). The score reflects what we actually verified, not what we hoped.
 
 ### 5.3 What the score means at a glance
-
-Inspired by the FDA-anchored benchmark in the problem statement:
 
 | Score range | Interpretation |
 |---|---|
@@ -243,27 +237,21 @@ Inspired by the FDA-anchored benchmark in the problem statement:
 | **75–89**   | Preferred / open access (few barriers beyond the label) |
 | **90–100**  | Best-in-class access (no step therapy, broad eligibility, long auth duration) |
 
-These bands are not hard cutoffs — they're a quick read for stakeholders. The raw integer is what gets compared against the ground-truth Access Score in the hackathon evaluation.
-
 ### 5.4 Worked example
-
-Say a policy yields:
 
 ```
 Age = ">=18"                              → 15 pts
 Number_of_Steps_through_Brands = "2"      \
 Number_of_Steps_through_Generic = "1"     /  → 3 total → 12 pts
 Step_Through_Phototherapy = "No"          → 10 pts
-Initial_Authorization_Duration = "12"     → 15 pts
-TB_Test_Required = "Y"                    →  0 pts
+Initial_Authorization_Duration = "12 Months"  → 15 pts
+TB_Test_Required = "Yes"                  →  0 pts
 Reauthorization_Required = "Yes"          \
-Reauthorization_Duration = "12"           /  → 7 pts
+Reauthorization_Duration = "12 Months"   /  → 7 pts
 Specialist_Types = "Dermatologist"        →  5 pts
                                              ───────
                                   Access Score: 64
 ```
-
-That's a "roughly parity with FDA label" policy — typical for plaque-PsO biologics in the US commercial market.
 
 ---
 
@@ -279,7 +267,7 @@ Changing code that doesn't change a prompt = free re-run. Changing a prompt = on
 
 ---
 
-## 6. Output schema
+## 7. Output schema
 
 `submission.csv` has exactly these 15 columns (the hackathon submission format):
 
