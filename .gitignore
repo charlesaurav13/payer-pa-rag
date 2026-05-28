@@ -6,6 +6,7 @@ Sample_PsO_ADS_Track/
 # Outputs
 submission.csv
 result.csv
+*.csv
 eval/
 
 # Cache directories
